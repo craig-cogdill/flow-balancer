@@ -1,2 +1,8 @@
 github.com/google/uuid v1.3.0 h1:t6JiXgmwXMjEs8VusXIJk2BXHsn+wx8BZdTaoZ5fu7I=
 github.com/google/uuid v1.3.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+github.com/gopacket/gopacket v1.1.0 h1:zKPCsVPcVt1B2AJyzSM44iaFVuFFSIyu0imExpPmyAk=
+github.com/gopacket/gopacket v1.1.0/go.mod h1:HavMeONEl7W9036of9LbSWoonqhH7HA1+ZRO+rMIvFs=
+github.com/vrecan/death v3.0.1+incompatible h1:hYRRqrdyoUAbymk2KJ8tNHmZFKcVeThRUySCqwC5Itg=
+github.com/vrecan/death v3.0.1+incompatible/go.mod h1:ektTae4lwvcXJ7pytrLb2N0w7mwhzmu+f5vRHYzy33E=
+github.com/vrecan/life v1.0.0 h1:DC0LcaPSHuErLGhKSrlGmu/nbYR9lIiGkcAiShCA/a0=
+github.com/vrecan/life v1.0.0/go.mod h1:EPB1XE5ZpJl3Fi3+zlnOBEUJZEb4rFKC5u4wbzK1bLk=

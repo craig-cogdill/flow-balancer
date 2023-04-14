@@ -1,21 +1,33 @@
 package balance
 
-import (
-	"fmt"
-)
+type Handler func(any)
 
 type worker struct {
-	id           int
-	pendingTasks int
+	i        int
+	requests chan any
+	pending  int
+	handler  Handler
+	doneChan chan<- *worker
 }
 
-func newWorker(id int) *worker {
+func newWorker(initialHeapIdx int, fn Handler, doneChan chan<- *worker) *worker {
 	return &worker{
-		id:           id,
-		pendingTasks: 0,
+		i:        initialHeapIdx,
+		requests: make(chan any, 100000),
+		pending:  0,
+		handler:  fn,
+		doneChan: doneChan,
 	}
 }
 
 func (w *worker) Start() {
-	fmt.Println("Worker: started")
+	go func() {
+		for {
+			select {
+			case x := <-w.requests:
+				w.handler(x)
+				w.doneChan <- w
+			}
+		}
+	}()
 }
