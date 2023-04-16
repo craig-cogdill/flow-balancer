@@ -13,7 +13,7 @@ type worker struct {
 func newWorker(initialHeapIdx int, fn Handler, doneChan chan<- *worker) *worker {
 	return &worker{
 		i:        initialHeapIdx,
-		requests: make(chan any, 100000),
+		requests: make(chan any, 10000),
 		pending:  0,
 		handler:  fn,
 		doneChan: doneChan,

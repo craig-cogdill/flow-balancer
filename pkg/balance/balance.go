@@ -2,7 +2,12 @@ package balance
 
 import (
 	"container/heap"
+	"errors"
 	"fmt"
+	"sync"
+	"time"
+
+	"github.com/cenkalti/backoff"
 )
 
 type Settings struct {
@@ -11,9 +16,19 @@ type Settings struct {
 }
 
 type Balancer struct {
-	pool Pool
-	done chan *worker
-	i    int
+	pool       Pool
+	poolLock   sync.Mutex
+	done       chan *worker
+	i          int
+	expBackoff backoff.BackOff
+}
+
+func newExponentialBackOff() backoff.BackOff {
+	expBackoff := backoff.NewExponentialBackOff()
+	expBackoff.InitialInterval = 100 * time.Microsecond
+	expBackoff.RandomizationFactor = 0.01
+	expBackoff.Multiplier = 1
+	return expBackoff
 }
 
 func New(settings Settings) *Balancer {
@@ -28,6 +43,10 @@ func New(settings Settings) *Balancer {
 	return &Balancer{
 		pool: pool,
 		done: done,
+		expBackoff: backoff.WithMaxRetries(
+			newExponentialBackOff(),
+			5,
+		),
 	}
 }
 
@@ -35,11 +54,17 @@ func (b *Balancer) Start(in <-chan any) {
 	go func() {
 		for {
 			select {
+			case worker := <-b.done:
+				b.updateHeap(worker)
+				// b.print()
+			}
+		}
+	}()
+	go func() {
+		for {
+			select {
 			case req := <-in:
-				b.dispatch(req)
-			case w := <-b.done:
-				b.updateHeap(w)
-				b.print()
+				b.safeDispatch(req)
 			}
 		}
 	}()
@@ -58,7 +83,30 @@ func (b *Balancer) print() {
 	fmt.Printf(" %.2f %.2f\n", avg, variance)
 }
 
+func (b *Balancer) nextWorkerIsBusy() error {
+	if cap(b.pool[0].requests) == len(b.pool[0].requests) {
+		return errors.New("")
+	}
+	return nil
+}
+
+func (b *Balancer) safeDispatch(data any) {
+	// TODO: backoff.WithContext
+	b.expBackoff.Reset()
+	err := backoff.Retry(
+		b.nextWorkerIsBusy,
+		b.expBackoff,
+	)
+	if err != nil {
+		fmt.Println("ERROR: everything is busy and I tried 5 times, dropping data...")
+		return
+	}
+	b.dispatch(data)
+}
+
 func (b *Balancer) dispatch(data any) {
+	b.poolLock.Lock()
+	defer b.poolLock.Unlock()
 	w := heap.Pop(&b.pool).(*worker)
 	w.requests <- data
 	w.pending++
@@ -66,6 +114,8 @@ func (b *Balancer) dispatch(data any) {
 }
 
 func (b *Balancer) updateHeap(w *worker) {
+	b.poolLock.Lock()
+	defer b.poolLock.Unlock()
 	w.pending--
 	mruWorker := heap.Remove(&b.pool, w.i)
 	heap.Push(&b.pool, mruWorker)

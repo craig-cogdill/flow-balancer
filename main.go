@@ -14,12 +14,12 @@ import (
 func workerThreadOp(in any) {
 	pkt, ok := in.(gopacket.Packet)
 	if !ok {
-		fmt.Println("fuck")
+		fmt.Println(fmt.Errorf("received a non-packet: %T\n", in))
 		return
 	}
 
 	// do some work
-	for i := 0; i < 75; i++ {
+	for i := 0; i < 100; i++ {
 		h := sha256.New()
 		h.Write(pkt.Data())
 		h.Sum(nil)
@@ -35,7 +35,7 @@ func requester(out chan<- any) {
 
 func main() {
 	settings := balance.Settings{
-		NumWorkers: 4,
+		NumWorkers: 20,
 		Handler:    workerThreadOp,
 	}
 	requests := make(chan any)
@@ -55,5 +55,5 @@ func main() {
 		requests <- pkt
 	}
 
-	fmt.Println("finished sending pcap packets...")
+	time.Sleep(10 * time.Second)
 }
