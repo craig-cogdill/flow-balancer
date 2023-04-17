@@ -1,19 +1,23 @@
 package balance
 
+import "github.com/google/uuid"
+
 type Handler func(any)
 
 type worker struct {
-	i        int
+	idx      int
+	uuid     string
 	requests chan any
 	pending  int
 	handler  Handler
 	doneChan chan<- *worker
 }
 
-func newWorker(initialHeapIdx int, fn Handler, doneChan chan<- *worker) *worker {
+func newWorker(initialHeapIdx int, fn Handler, doneChan chan<- *worker, queueSize int) *worker {
 	return &worker{
-		i:        initialHeapIdx,
-		requests: make(chan any, 10000),
+		idx:      initialHeapIdx,
+		uuid:     uuid.NewString(),
+		requests: make(chan any, queueSize),
 		pending:  0,
 		handler:  fn,
 		doneChan: doneChan,

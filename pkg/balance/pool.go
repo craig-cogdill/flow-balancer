@@ -11,8 +11,8 @@ func (p Pool) Less(i, j int) bool {
 func (p *Pool) Swap(i, j int) {
 	a := *p
 	a[i], a[j] = a[j], a[i]
-	a[i].i = i
-	a[j].i = j
+	a[i].idx = i
+	a[j].idx = j
 }
 
 func (p *Pool) Push(x interface{}) {
@@ -21,7 +21,7 @@ func (p *Pool) Push(x interface{}) {
 	a = a[0 : n+1]
 	w := x.(*worker)
 	a[n] = w
-	w.i = n
+	w.idx = n
 	*p = a
 }
 
@@ -29,6 +29,6 @@ func (p *Pool) Pop() interface{} {
 	a := *p
 	*p = a[0 : len(a)-1]
 	w := a[len(a)-1]
-	w.i = -1 // for safety
+	w.idx = -1 // for safety
 	return w
 }
