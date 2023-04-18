@@ -2,10 +2,10 @@ package balance
 
 import (
 	"container/heap"
+	"context"
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/cenkalti/backoff"
@@ -21,44 +21,54 @@ type Settings struct {
 }
 
 type BalancerStats struct {
-	processed  atomic.Int64
-	failedBusy atomic.Int64
-	failedType atomic.Int64
-	failedHash atomic.Int64
+	processed  int64
+	failedBusy int64
+	failedType int64
+	failedHash int64
 }
 
 func (b *BalancerStats) Processed() int64 {
-	return b.processed.Load()
+	return b.processed
 }
 
 func (b *BalancerStats) FailedBusy() int64 {
-	return b.failedBusy.Load()
+	return b.failedBusy
 }
 
 func (b *BalancerStats) FailedType() int64 {
-	return b.failedType.Load()
+	return b.failedType
 }
 
 func (b *BalancerStats) FailedHash() int64 {
-	return b.failedHash.Load()
+	return b.failedHash
 }
 
 type myPool struct {
-	p    Pool
 	lock sync.Mutex
+	p    Pool
+	wg   sync.WaitGroup
+}
+
+func NewMyPool(numWorkers int) *myPool {
+	mp := &myPool{
+		p: make(Pool, 0, numWorkers),
+	}
+	mp.wg.Add(numWorkers)
+	return mp
 }
 
 type Balancer struct {
 	Stats BalancerStats
 
-	done          chan *worker
-	expBackoff    backoff.BackOff
-	flowTable     map[string]*worker
-	workersByUuid map[string]*worker
-	mp            myPool
+	ctx       context.Context
+	cancel    context.CancelFunc
+	done      chan *worker
+	blocker   *blocker
+	flowTable *flowTable
+	mp        *myPool
 }
 
-func newExponentialBackOff() backoff.BackOff {
+func NewExponentialBackOff() backoff.BackOff {
 	expBackoff := backoff.NewExponentialBackOff()
 	expBackoff.InitialInterval = 1 * time.Microsecond
 	expBackoff.RandomizationFactor = 0.3
@@ -67,90 +77,97 @@ func newExponentialBackOff() backoff.BackOff {
 }
 
 func New(settings Settings) *Balancer {
-	done := make(chan *worker, settings.NumWorkers)
-	pool := make(Pool, 0, settings.NumWorkers)
-	workersByUuid := make(map[string]*worker, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan *worker, settings.WorkerQueueSize)
+	mp := NewMyPool(settings.NumWorkers)
 	for i := 0; i < settings.NumWorkers; i++ {
-		w := newWorker(i, settings.Handler, done, settings.WorkerQueueSize)
-		workersByUuid[w.uuid] = w
-		heap.Push(&pool, w)
+		w := newWorker(
+			ctx,
+			i,
+			settings.Handler,
+			done,
+			settings.WorkerQueueSize,
+			func() { mp.wg.Done() },
+		)
+		heap.Push(&mp.p, w)
 		w.Start()
 	}
-	heap.Init(&pool)
+	heap.Init(&mp.p)
 	return &Balancer{
-		mp: myPool{
-			p: pool,
-		},
-		done: done,
-		expBackoff: backoff.WithMaxRetries(
-			newExponentialBackOff(),
-			5,
+		ctx:    ctx,
+		cancel: cancel,
+		mp:     mp,
+		done:   done,
+		blocker: NewBlocker(
+			backoff.WithMaxRetries(
+				NewExponentialBackOff(),
+				5,
+			),
 		),
-		workersByUuid: workersByUuid,
-		flowTable:     make(map[string]*worker, 0),
+		flowTable: NewFlowTable(),
 	}
 }
 
 func (b *Balancer) Start(in <-chan gopacket.Packet) {
-	go func() {
-		for {
-			select {
-			case worker := <-b.done:
-				b.updateHeap(worker)
-				b.Stats.processed.Add(1)
-				// b.print()
-			}
-		}
-	}()
+	go b.handleDone()
+
 	go func() {
 		for {
 			select {
 			case req := <-in:
 				pkt, ok := req.(gopacket.Packet)
 				if !ok {
-					fmt.Println("received a non-packet")
-					b.Stats.failedType.Add(1)
+					b.Stats.failedType++
 					continue
 				}
 				b.dispatch(pkt)
-				// b.printFlowTable()
+				// b.flowTable.Print()
 			}
 		}
 	}()
 }
 
-func (b *Balancer) printFlowTable() {
-	fmt.Println("\n\n==============================================================")
-	for hash, worker := range b.flowTable {
-		fmt.Printf("[%s]\t%s (%v)\n", hash, worker.uuid, worker.idx)
+func (b *Balancer) Stop() {
+	b.cancel()
+	b.mp.wg.Wait()
+}
+
+func (b *Balancer) Clear(hash string) {
+	b.flowTable.Clear(hash)
+}
+
+func (b *Balancer) handleDone() {
+	for {
+		select {
+		case worker := <-b.done:
+			b.updateHeap(worker)
+			b.Stats.processed++
+			// b.print()
+		}
 	}
-	fmt.Println("==============================================================\n\n")
 }
 
 func (b *Balancer) dispatch(pkt gopacket.Packet) {
 	hash, err := hash(pkt)
 	if err != nil {
-		b.Stats.failedHash.Add(1)
+		b.Stats.failedHash++
 		fmt.Println("unable to calculate hash")
 		return
 	}
 
 	waitFn := b.nextWorkerIsBusy
-	w, found := b.flowTable[hash]
+	w, found := b.flowTable.Get(hash)
 	if found {
 		waitFn = b.getIsBusy(w)
 	}
 
-	b.expBackoff.Reset()
-	err = backoff.Retry(
-		waitFn,
-		b.expBackoff,
-	)
+	err = b.blocker.Wait(waitFn)
 	if err != nil {
 		fmt.Println("ERROR: everything is busy and I tried 5 times, dropping data...")
-		b.Stats.failedBusy.Add(1)
+		b.Stats.failedBusy++
 		return
 	}
+
 	b.mp.lock.Lock()
 	defer b.mp.lock.Unlock()
 	if found {
@@ -162,7 +179,7 @@ func (b *Balancer) dispatch(pkt gopacket.Packet) {
 		w.requests <- pkt
 		heap.Push(&b.mp.p, w)
 		w.pending++
-		b.flowTable[hash] = w
+		b.flowTable.Set(hash, w)
 	}
 }
 

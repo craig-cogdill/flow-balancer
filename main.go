@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"sync/atomic"
 
@@ -60,14 +61,16 @@ func main() {
 	}
 	fmt.Println("======= Finished sending =========")
 
-	for {
+	blocker := balance.NewBlocker(balance.NewExponentialBackOff())
+	blocker.Wait(func() error {
 		if (b.Stats.Processed() +
 			b.Stats.FailedBusy() +
 			b.Stats.FailedHash() +
 			b.Stats.FailedType()) == int64(processed) {
-			break
+			return nil
 		}
-	}
+		return errors.New("")
+	})
 
 	fmt.Printf("\nSent:   %v\n", processed)
 
