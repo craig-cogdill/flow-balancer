@@ -74,11 +74,11 @@ type pool struct {
 }
 
 func newPool(numWorkers int) *pool {
-	mp := &pool{
+	p := &pool{
 		heap: make(Heap, 0, numWorkers),
 	}
-	mp.wg.Add(numWorkers)
-	return mp
+	p.wg.Add(numWorkers)
+	return p
 }
 
 type Balancer struct {
@@ -113,7 +113,7 @@ func New(processFn Handler, settings Settings) *Balancer {
 				handler:         processFn,
 				completed:       completed,
 				queueSize:       settings.WorkerQueueSize,
-				finished:        p.wg.Done,
+				postStop:        p.wg.Done,
 				shutdownTimeout: settings.ShutdownTimeout,
 			},
 		)
@@ -150,6 +150,12 @@ func (b *Balancer) Start(in <-chan gopacket.Packet) {
 func (b *Balancer) Stop() {
 	b.cancel()
 	b.p.wg.Wait()
+	b.blocker.Wait(func() error {
+		if len(b.completed) > 0 {
+			return errors.New("")
+		}
+		return nil
+	})
 	close(b.completed)
 }
 
