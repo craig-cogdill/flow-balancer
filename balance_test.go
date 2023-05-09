@@ -35,16 +35,16 @@ func getTestSettings() Settings {
 func Test_Functionality(t *testing.T) {
 	t.Run("handler fn called for every incoming packet", func(t *testing.T) {
 		noop := func(ignored any) {}
-		c := make(chan gopacket.Packet)
+		pkts := make(chan gopacket.Packet)
 		b := New(noop, getTestSettings())
 		assert.NotNil(t, b)
-		b.Start(c)
+		b.Start(pkts)
 
 		runs := 100
 		for i := 0; i < runs; i++ {
-			c <- gopacket.NewPacket(udpDNSPacketBytes, layers.LayerTypeEthernet, gopacket.Default)
+			pkts <- gopacket.NewPacket(udpDNSPacketBytes, layers.LayerTypeEthernet, gopacket.Default)
 		}
-		b.Stop()
+		b.Stop() // blocking
 
 		assert.Equal(t, int64(runs), b.Stats.Processed())
 	})
