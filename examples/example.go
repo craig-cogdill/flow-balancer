@@ -6,7 +6,7 @@ import (
 	"os"
 	"sync/atomic"
 
-	balance "github.com/craigcogdill/load-balancer"
+	balance "github.com/craigcogdill/flow-balancer"
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/pcap"
 )
