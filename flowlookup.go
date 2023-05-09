@@ -5,42 +5,42 @@ import (
 	"sync"
 )
 
-type flowTable struct {
+type flowLookup struct {
 	lock   sync.RWMutex
 	lookup map[string]*worker
 }
 
-func NewFlowTable() *flowTable {
-	return &flowTable{
+func NewFlowLookup() *flowLookup {
+	return &flowLookup{
 		lookup: make(map[string]*worker),
 	}
 }
 
-func (f *flowTable) Set(hash string, w *worker) {
+func (f *flowLookup) Store(hash string, w *worker) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 	f.lookup[hash] = w
 }
 
-func (f *flowTable) Get(hash string) (w *worker, found bool) {
+func (f *flowLookup) Load(hash string) (w *worker, found bool) {
 	f.lock.RLock()
 	defer f.lock.RUnlock()
 	w, found = f.lookup[hash]
 	return
 }
 
-func (f *flowTable) Clear(hash string) {
+func (f *flowLookup) Delete(hash string) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 	delete(f.lookup, hash)
 }
 
-func (f *flowTable) Print() {
+func (f *flowLookup) Print() {
 	f.lock.RLock()
 	defer f.lock.RUnlock()
 	fmt.Println("\n\n==============================================================")
 	for hash, worker := range f.lookup {
 		fmt.Printf("[%s]\t%s (%v)\n", hash, worker.uuid, worker.idx)
 	}
-	fmt.Println("==============================================================\n\n")
+	fmt.Printf("==============================================================\n\n")
 }
