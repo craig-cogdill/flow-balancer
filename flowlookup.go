@@ -10,32 +10,32 @@ type flowLookup struct {
 	lookup map[string]*worker
 }
 
-func NewFlowLookup() *flowLookup {
+func newFlowLookup() *flowLookup {
 	return &flowLookup{
 		lookup: make(map[string]*worker),
 	}
 }
 
-func (f *flowLookup) Store(hash string, w *worker) {
+func (f *flowLookup) store(hash string, w *worker) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 	f.lookup[hash] = w
 }
 
-func (f *flowLookup) Load(hash string) (w *worker, found bool) {
+func (f *flowLookup) load(hash string) (w *worker, found bool) {
 	f.lock.RLock()
 	defer f.lock.RUnlock()
 	w, found = f.lookup[hash]
 	return
 }
 
-func (f *flowLookup) Delete(hash string) {
+func (f *flowLookup) delete(hash string) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 	delete(f.lookup, hash)
 }
 
-func (f *flowLookup) Print() {
+func (f *flowLookup) print() {
 	f.lock.RLock()
 	defer f.lock.RUnlock()
 	fmt.Println("\n\n==============================================================")
