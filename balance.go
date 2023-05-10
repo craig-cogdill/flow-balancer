@@ -65,11 +65,11 @@ type pool struct {
 }
 
 func newPool(numWorkers int) *pool {
-	mp := &pool{
+	p := &pool{
 		heap: make(Heap, 0, numWorkers),
 	}
-	mp.wg.Add(numWorkers)
-	return mp
+	p.wg.Add(numWorkers)
+	return p
 }
 
 func newExponentialBackOff() backoff.BackOff {
@@ -104,7 +104,7 @@ func New(processFn Handler, settings Settings) *Balancer {
 				handler:         processFn,
 				completed:       completed,
 				queueSize:       settings.WorkerQueueSize,
-				finished:        p.wg.Done,
+				postStop:        p.wg.Done,
 				shutdownTimeout: settings.ShutdownTimeout,
 			},
 		)

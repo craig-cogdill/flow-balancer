@@ -24,7 +24,7 @@ type workerSettings struct {
 	handler         Handler
 	completed       chan<- *worker
 	queueSize       int
-	finished        func()
+	postStop        func()
 	shutdownTimeout time.Duration
 }
 
@@ -54,8 +54,8 @@ func (w *worker) start() error {
 			select {
 			case <-w.ctx.Done():
 				w.drainRequests()
-				if w.settings.finished != nil {
-					w.settings.finished()
+				if w.settings.postStop != nil {
+					w.settings.postStop()
 				}
 				return
 			case x := <-w.requests:
