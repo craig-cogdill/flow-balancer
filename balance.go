@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cenkalti/backoff"
@@ -24,51 +25,41 @@ var Default = Settings{
 	WorkerQueueSize: 10000,
 	ShutdownTimeout: 30 * time.Second,
 	Backoff: backoff.WithMaxRetries(
-		NewExponentialBackOff(),
+		newExponentialBackOff(),
 		10,
 	),
 }
 
-type BalancerStats struct {
-	processed          int64
-	failedBusy         int64
-	failedType         int64
-	failedHash         int64
-	processedPerWorker map[string]int64
+type Stats struct {
+	processed          atomic.Uint64
+	failedBusy         atomic.Uint64
+	failedType         atomic.Uint64
+	failedHash         atomic.Uint64
+	processedPerWorker map[string]uint64
 }
 
-func NewStats() BalancerStats {
-	return BalancerStats{
-		processed:          0,
-		failedBusy:         0,
-		failedType:         0,
-		failedHash:         0,
-		processedPerWorker: make(map[string]int64),
-	}
+func (b *Stats) Processed() uint64 {
+	return b.processed.Load()
 }
 
-func (b *BalancerStats) Processed() int64 {
-	return b.processed
+func (b *Stats) FailedBusy() uint64 {
+	return b.failedBusy.Load()
 }
 
-func (b *BalancerStats) FailedBusy() int64 {
-	return b.failedBusy
+func (b *Stats) FailedType() uint64 {
+	return b.failedType.Load()
 }
 
-func (b *BalancerStats) FailedType() int64 {
-	return b.failedType
+func (b *Stats) FailedHash() uint64 {
+	return b.failedHash.Load()
 }
 
-func (b *BalancerStats) FailedHash() int64 {
-	return b.failedHash
-}
-
-func (b *BalancerStats) ProcessedPerWorker() map[string]int64 {
+func (b *Stats) ProcessedPerWorker() map[string]uint64 {
 	return b.processedPerWorker
 }
 
 type pool struct {
-	lock sync.Mutex
+	lock sync.RWMutex
 	heap Heap
 	wg   sync.WaitGroup
 }
@@ -81,8 +72,16 @@ func newPool(numWorkers int) *pool {
 	return p
 }
 
+func newExponentialBackOff() backoff.BackOff {
+	expBackoff := backoff.NewExponentialBackOff()
+	expBackoff.InitialInterval = 1 * time.Microsecond
+	expBackoff.RandomizationFactor = 0.1
+	expBackoff.Multiplier = 1.5
+	return expBackoff
+}
+
 type Balancer struct {
-	Stats BalancerStats
+	Stats Stats
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -90,14 +89,6 @@ type Balancer struct {
 	blocker   *blocker
 	flowTable *flowLookup
 	p         *pool
-}
-
-func NewExponentialBackOff() backoff.BackOff {
-	expBackoff := backoff.NewExponentialBackOff()
-	expBackoff.InitialInterval = 1 * time.Microsecond
-	expBackoff.RandomizationFactor = 0.3
-	expBackoff.Multiplier = 2
-	return expBackoff
 }
 
 func New(processFn Handler, settings Settings) *Balancer {
@@ -122,23 +113,25 @@ func New(processFn Handler, settings Settings) *Balancer {
 			return nil
 		}
 		heap.Push(&p.heap, w)
-		w.Start()
+		w.start()
 	}
 	heap.Init(&p.heap)
 
 	return &Balancer{
-		Stats:     NewStats(),
+		Stats: Stats{
+			processedPerWorker: make(map[string]uint64),
+		},
 		ctx:       ctx,
 		cancel:    cancel,
 		p:         p,
 		completed: completed,
 		blocker: NewBlocker(
 			backoff.WithMaxRetries(
-				NewExponentialBackOff(),
+				newExponentialBackOff(),
 				10,
 			),
 		),
-		flowTable: NewFlowLookup(),
+		flowTable: newFlowLookup(),
 	}
 }
 
@@ -148,19 +141,19 @@ func (b *Balancer) Start(in <-chan gopacket.Packet) {
 }
 
 func (b *Balancer) Stop() {
+	defer close(b.completed)
 	b.cancel()
 	b.p.wg.Wait()
 	b.blocker.Wait(func() error {
 		if len(b.completed) > 0 {
-			return errors.New("")
+			return errors.New("completed channel not empty")
 		}
 		return nil
 	})
-	close(b.completed)
 }
 
 func (b *Balancer) Delete(hash string) {
-	b.flowTable.Delete(hash)
+	b.flowTable.delete(hash)
 }
 
 func (b *Balancer) handleCompleted() {
@@ -174,7 +167,8 @@ func (b *Balancer) handleCompleted() {
 				return
 			}
 			b.updateHeap(worker)
-			b.Stats.processed++
+			b.Stats.processed.Add(1)
+			// this is a race condition
 			b.Stats.processedPerWorker[worker.uuid]++
 			// b.print()
 		}
@@ -198,39 +192,35 @@ func (b *Balancer) handleDispatch(in <-chan gopacket.Packet) {
 func (b *Balancer) dispatch(pkt gopacket.Packet) {
 	hash, err := hash(pkt)
 	if err != nil {
-		b.Stats.failedHash++
+		b.Stats.failedHash.Add(1)
 		return
 	}
 
-	waitFn := b.nextWorkerIsBusy
-	w, found := b.flowTable.Load(hash)
+	selectedWorker := b.p.heap[0]
+	existingWorker, found := b.flowTable.load(hash)
 	if found {
-		waitFn = b.getIsQueueFull(w)
+		selectedWorker = existingWorker
 	}
 
-	err = b.blocker.Wait(waitFn)
+	err = b.blocker.Wait(b.queueIsNotFull(selectedWorker))
 	if err != nil {
-		b.Stats.failedBusy++
+		b.Stats.failedBusy.Add(1)
 		return
 	}
 
 	b.p.lock.Lock()
 	defer b.p.lock.Unlock()
 	if found {
-		w.requests <- pkt
-		w.pending++
-		heap.Fix(&b.p.heap, w.idx)
+		selectedWorker.requests <- pkt
+		selectedWorker.pending++
+		heap.Fix(&b.p.heap, selectedWorker.idx)
 	} else {
 		w := heap.Pop(&b.p.heap).(*worker)
 		w.requests <- pkt
 		heap.Push(&b.p.heap, w)
 		w.pending++
-		b.flowTable.Store(hash, w)
+		b.flowTable.store(hash, w)
 	}
-}
-
-func (b *Balancer) nextWorkerIsBusy() error {
-	return b.getIsQueueFull(b.p.heap[0])()
 }
 
 func (b *Balancer) updateHeap(w *worker) {
@@ -241,10 +231,10 @@ func (b *Balancer) updateHeap(w *worker) {
 	heap.Push(&b.p.heap, mruWorker)
 }
 
-func (b *Balancer) getIsQueueFull(w *worker) backoff.Operation {
+func (b *Balancer) queueIsNotFull(w *worker) func() error {
 	return func() error {
 		if cap(w.requests) == len(w.requests) {
-			return errors.New("worker queue is full")
+			return errors.New("queue is full")
 		}
 		return nil
 	}

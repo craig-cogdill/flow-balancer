@@ -32,8 +32,41 @@ func getTestSettings() Settings {
 	return s
 }
 
+var noop = func(ignored any) {}
+
+func Test_StartAndStop(t *testing.T) {
+	t.Run("start", func(t *testing.T) {
+		c := make(chan gopacket.Packet)
+		b := New(noop, getTestSettings())
+		assert.NotNil(t, b)
+		assert.NotPanics(t, func() {
+			b.Start(c)
+		})
+	})
+
+	t.Run("stop with no start", func(t *testing.T) {
+		b := New(noop, getTestSettings())
+		assert.NotNil(t, b)
+		assert.NotPanics(t, func() {
+			b.Stop()
+		})
+	})
+
+	t.Run("start and stop", func(t *testing.T) {
+		c := make(chan gopacket.Packet)
+		b := New(noop, getTestSettings())
+		assert.NotNil(t, b)
+		assert.NotPanics(t, func() {
+			b.Start(c)
+		})
+		assert.NotPanics(t, func() {
+			b.Stop()
+		})
+	})
+}
+
 func Test_Functionality(t *testing.T) {
-	t.Run("handler fn called for every incoming packet", func(t *testing.T) {
+	t.Run("handler fn called for every incoming packet - single-threaded", func(t *testing.T) {
 		noop := func(ignored any) {}
 		pkts := make(chan gopacket.Packet)
 		b := New(noop, getTestSettings())
@@ -46,6 +79,6 @@ func Test_Functionality(t *testing.T) {
 		}
 		b.Stop() // blocking
 
-		assert.Equal(t, int64(runs), b.Stats.Processed())
+		assert.Equal(t, uint64(runs), b.Stats.Processed())
 	})
 }

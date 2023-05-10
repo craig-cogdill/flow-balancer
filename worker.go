@@ -45,7 +45,7 @@ func newWorker(ctx context.Context, settings workerSettings) (*worker, error) {
 	}, nil
 }
 
-func (w *worker) Start() error {
+func (w *worker) start() error {
 	if w.settings.handler == nil {
 		return errors.New("Failed to start worker: empty handler")
 	}
