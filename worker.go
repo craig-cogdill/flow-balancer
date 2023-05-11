@@ -30,7 +30,7 @@ type workerSettings struct {
 
 func newWorker(ctx context.Context, settings workerSettings) (*worker, error) {
 	if settings.handler == nil {
-		return nil, errors.New("Failed to initialize worker: empty handler")
+		return nil, errors.New("failed to initialize worker: empty handler")
 	}
 	if settings.shutdownTimeout == 0 {
 		settings.shutdownTimeout = 30 * time.Second
@@ -47,7 +47,7 @@ func newWorker(ctx context.Context, settings workerSettings) (*worker, error) {
 
 func (w *worker) start() error {
 	if w.settings.handler == nil {
-		return errors.New("Failed to start worker: empty handler")
+		return errors.New("failed to start worker: empty handler")
 	}
 	go func() {
 		for {
@@ -58,7 +58,10 @@ func (w *worker) start() error {
 					w.settings.postStop()
 				}
 				return
-			case x := <-w.requests:
+			case x, ok := <-w.requests:
+				if !ok {
+					return
+				}
 				w.settings.handler(x)
 				w.settings.completed <- w
 			}
@@ -68,28 +71,18 @@ func (w *worker) start() error {
 }
 
 func (w *worker) drainRequests() {
-	finished := make(chan struct{})
-	go func() {
+	withTimeout(func() {
 		for {
 			select {
 			case req, ok := <-w.requests:
 				if !ok {
-					finished <- struct{}{}
 					return
 				}
 				w.settings.handler(req)
 				w.settings.completed <- w
 			default:
-				finished <- struct{}{}
 				return
 			}
 		}
-	}()
-
-	select {
-	case <-finished:
-		return
-	case <-time.After(w.settings.shutdownTimeout):
-		return
-	}
+	}, w.settings.shutdownTimeout)
 }
