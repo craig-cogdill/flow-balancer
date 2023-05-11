@@ -1,6 +1,10 @@
 package balance
 
-import "github.com/cenkalti/backoff"
+import (
+	"time"
+
+	"github.com/cenkalti/backoff"
+)
 
 type blocker struct {
 	b backoff.BackOff
@@ -18,4 +22,19 @@ func (b *blocker) Wait(fn func() error) error {
 		fn,
 		b.b,
 	)
+}
+
+func withTimeout(fn func(), timeout time.Duration) {
+	finished := make(chan struct{})
+	go func() {
+		fn()
+		finished <- struct{}{}
+	}()
+
+	select {
+	case <-finished:
+		return
+	case <-time.After(timeout):
+		return
+	}
 }

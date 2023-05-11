@@ -42,6 +42,10 @@ func (b *Stats) Processed() uint64 {
 	return b.processed.Load()
 }
 
+func (b *Stats) Failed() uint64 {
+	return b.FailedBusy() + b.FailedHash() + b.FailedType()
+}
+
 func (b *Stats) FailedBusy() uint64 {
 	return b.failedBusy.Load()
 }
@@ -83,22 +87,26 @@ func newExponentialBackOff() backoff.BackOff {
 type Balancer struct {
 	Stats Stats
 
-	ctx       context.Context
-	cancel    context.CancelFunc
-	completed chan *worker
-	blocker   *blocker
-	flowTable *flowLookup
-	p         *pool
+	ctx            context.Context
+	cancelBalancer context.CancelFunc
+	wg             sync.WaitGroup
+	cancelWorkers  context.CancelFunc
+	completed      chan *worker
+	blocker        *blocker
+	flowTable      *flowLookup
+	p              *pool
 }
 
 func New(processFn Handler, settings Settings) *Balancer {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancelBalancer := context.WithCancel(context.Background())
 	completed := make(chan *worker, settings.WorkerQueueSize*2)
+
+	workerCtx, cancelWorkers := context.WithCancel(context.Background())
 
 	p := newPool(settings.NumWorkers)
 	for i := 0; i < settings.NumWorkers; i++ {
 		w, err := newWorker(
-			ctx,
+			workerCtx,
 			workerSettings{
 				initialIndex:    i,
 				handler:         processFn,
@@ -109,7 +117,8 @@ func New(processFn Handler, settings Settings) *Balancer {
 			},
 		)
 		if err != nil {
-			cancel()
+			cancelBalancer()
+			cancelWorkers()
 			return nil
 		}
 		heap.Push(&p.heap, w)
@@ -121,10 +130,11 @@ func New(processFn Handler, settings Settings) *Balancer {
 		Stats: Stats{
 			processedPerWorker: make(map[string]uint64),
 		},
-		ctx:       ctx,
-		cancel:    cancel,
-		p:         p,
-		completed: completed,
+		ctx:            ctx,
+		cancelBalancer: cancelBalancer,
+		cancelWorkers:  cancelWorkers,
+		p:              p,
+		completed:      completed,
 		blocker: NewBlocker(
 			backoff.WithMaxRetries(
 				newExponentialBackOff(),
@@ -136,20 +146,37 @@ func New(processFn Handler, settings Settings) *Balancer {
 }
 
 func (b *Balancer) Start(in <-chan gopacket.Packet) {
+	b.wg.Add(2)
 	go b.handleCompleted()
 	go b.handleDispatch(in)
 }
 
 func (b *Balancer) Stop() {
 	defer close(b.completed)
-	b.cancel()
+
+	// It is important that the dispatch and completed goroutines exit before
+	// the worker goroutines. This ensures that no data is lost due to race
+	// conditions between the final packets being dispatched and the worker
+	// goroutines draining their request channels.
+	b.cancelBalancer()
+	b.wg.Wait()
+
+	b.cancelWorkers()
 	b.p.wg.Wait()
-	b.blocker.Wait(func() error {
-		if len(b.completed) > 0 {
-			return errors.New("completed channel not empty")
+
+	withTimeout(func() {
+		numCompleted := len(b.completed)
+		if numCompleted > 0 {
+			for i := 0; i < numCompleted; i++ {
+				worker, ok := <-b.completed
+				if !ok {
+					return
+				}
+				b.Stats.processed.Add(1)
+				b.Stats.processedPerWorker[worker.uuid]++
+			}
 		}
-		return nil
-	})
+	}, 5*time.Second)
 }
 
 func (b *Balancer) Delete(hash string) {
@@ -157,11 +184,11 @@ func (b *Balancer) Delete(hash string) {
 }
 
 func (b *Balancer) handleCompleted() {
+	defer b.wg.Done()
 	for {
 		select {
-		// The goroutine should continue to process completed
-		// packets until the completed channel is closed by
-		// a call to Balancer.Stop()
+		case <-b.ctx.Done():
+			return
 		case worker, ok := <-b.completed:
 			if !ok {
 				return
@@ -176,6 +203,7 @@ func (b *Balancer) handleCompleted() {
 }
 
 func (b *Balancer) handleDispatch(in <-chan gopacket.Packet) {
+	defer b.wg.Done()
 	for {
 		select {
 		case <-b.ctx.Done():
@@ -196,7 +224,10 @@ func (b *Balancer) dispatch(pkt gopacket.Packet) {
 		return
 	}
 
+	b.p.lock.RLock()
 	selectedWorker := b.p.heap[0]
+	b.p.lock.RUnlock()
+
 	existingWorker, found := b.flowTable.load(hash)
 	if found {
 		selectedWorker = existingWorker
